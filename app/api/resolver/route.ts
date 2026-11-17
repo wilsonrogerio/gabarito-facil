@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 export const maxDuration = 60;
 
@@ -7,13 +7,6 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function POST(req: Request) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      return NextResponse.json(
-        { error: 'GEMINI_API_KEY não encontrada nas variáveis de ambiente da Vercel.' },
-        { status: 500 }
-      );
-    }
-
     const formData = await req.formData();
     const file = formData.get('file') as File;
 
@@ -21,13 +14,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nenhum PDF enviado.' }, { status: 400 });
     }
 
-    // 1. Descobre dinamicamente os modelos válidos para a sua chave atual
+    // Busca modelos disponíveis evitando versões "lite" (fracas em matemática)
     const pager = await ai.models.list();
     const disponiveis: string[] = [];
     for await (const m of pager) {
       const nome = m.name?.replace('models/', '') || '';
       if (
         nome.includes('gemini') &&
+        !nome.includes('lite') &&
         !nome.includes('embedding') &&
         !nome.includes('imagen') &&
         !nome.includes('veo') &&
@@ -38,27 +32,19 @@ export async function POST(req: Request) {
       }
     }
 
-    // Ordena priorizando versões flash estáveis (mais rápidas e maior cota gratuita)
-    const prioridades = ['flash', 'pro'];
+    // Prioriza modelos mais fortes em matemática/lógica
+    const ordemPreferencia = ['2.5-pro', '3.1-pro', '3-flash', '2.5-flash', 'pro', 'flash'];
     const modelosOrdenados = disponiveis.sort((a, b) => {
-      const scoreA = prioridades.findIndex((p) => a.includes(p));
-      const scoreB = prioridades.findIndex((p) => b.includes(p));
-      return (scoreA === -1 ? 99 : scoreA) - (scoreB === -1 ? 99 : scoreB);
+      const idxA = ordemPreferencia.findIndex((p) => a.includes(p));
+      const idxB = ordemPreferencia.findIndex((p) => b.includes(p));
+      return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
     });
-
-    if (modelosOrdenados.length === 0) {
-      return NextResponse.json(
-        { error: 'Nenhum modelo Gemini disponível para esta API Key.' },
-        { status: 500 }
-      );
-    }
 
     const bytes = await file.arrayBuffer();
     const base64Pdf = Buffer.from(bytes).toString('base64');
 
     let ultimoErro = '';
 
-    // 2. Testa os modelos reais da sua conta até o primeiro responder
     for (const modelo of modelosOrdenados.slice(0, 4)) {
       try {
         const response = await ai.models.generateContent({
@@ -70,31 +56,57 @@ export async function POST(req: Request) {
                 data: base64Pdf,
               },
             },
-            'Resolva todas as questões desta prova (incluindo gráficos e imagens) e retorne APENAS o gabarito final.',
+            'Resolva cada questão desta prova com atenção máxima aos cálculos, sinais, gráficos e alternativas.',
           ],
           config: {
             temperature: 0.1,
-            systemInstruction:
-              'Você é um corretor de provas exato. Resolva cada questão internamente com rigor matemático e lógico, mas na sua resposta final escreva EXCLUSIVAMENTE o número da questão e a letra da alternativa correta, uma por linha, no formato exato: "1 - A". Não escreva explicações, introduções, saudações ou textos adicionais.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.ARRAY,
+              description: 'Lista ordenada das questões resolvidas',
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  questao: { type: Type.INTEGER },
+                  raciocinio: {
+                    type: Type.STRING,
+                    description: 'Resolução matemática/lógica completa passo a passo antes de escolher a letra.',
+                  },
+                  alternativaCorreta: {
+                    type: Type.STRING,
+                    description: 'Apenas uma letra maiúscula: A, B, C, D ou E',
+                  },
+                },
+                required: ['questao', 'raciocinio', 'alternativaCorreta'],
+              },
+            },
           },
         });
 
         if (response.text) {
+          const questoes = JSON.parse(response.text) as Array<{
+            questao: number;
+            alternativaCorreta: string;
+          }>;
+
+          // Formata limpo para a tela: "1 - B"
+          const gabaritoLimpo = questoes
+            .sort((a, b) => a.questao - b.questao)
+            .map((q) => `${q.questao} - ${q.alternativaCorreta.trim().toUpperCase()}`)
+            .join('\n');
+
           return NextResponse.json({
-            gabarito: response.text.trim(),
+            gabarito: gabaritoLimpo,
             modelo: modelo,
           });
         }
       } catch (err: any) {
-        ultimoErro = `[${modelo}] ${err?.message || 'Erro desconhecido'}`;
+        ultimoErro = `[${modelo}] ${err?.message || 'Erro'}`;
       }
     }
 
     return NextResponse.json({ error: ultimoErro }, { status: 500 });
   } catch (error: any) {
-    return NextResponse.json(
-      { error: error?.message || 'Erro interno ao processar requisição.' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: error?.message || 'Erro interno.' }, { status: 500 });
   }
 }

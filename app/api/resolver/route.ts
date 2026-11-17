@@ -14,38 +14,51 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nenhum PDF enviado.' }, { status: 400 });
     }
 
-    // Busca modelos disponíveis evitando versões "lite" (fracas em matemática)
+    // 1. Pega apenas modelos estáveis de texto/multimodal (exclui omni, exp, lite e preview com limit: 0)
     const pager = await ai.models.list();
-    const disponiveis: string[] = [];
+    const estaveis: string[] = [];
+    const fallbacks: string[] = [];
+
     for await (const m of pager) {
       const nome = m.name?.replace('models/', '') || '';
       if (
-        nome.includes('gemini') &&
-        !nome.includes('lite') &&
-        !nome.includes('embedding') &&
-        !nome.includes('imagen') &&
-        !nome.includes('veo') &&
-        !nome.includes('tts') &&
-        !nome.includes('image')
+        !nome.includes('gemini') ||
+        nome.includes('embedding') ||
+        nome.includes('imagen') ||
+        nome.includes('veo') ||
+        nome.includes('tts') ||
+        nome.includes('image') ||
+        nome.includes('omni') ||
+        nome.includes('robotics') ||
+        nome.includes('computer-use')
       ) {
-        disponiveis.push(nome);
+        continue;
+      }
+
+      if (!nome.includes('preview') && !nome.includes('exp') && !nome.includes('lite')) {
+        estaveis.push(nome);
+      } else if (!nome.includes('lite')) {
+        fallbacks.push(nome);
       }
     }
 
-    // Prioriza modelos mais fortes em matemática/lógica
-    const ordemPreferencia = ['2.5-pro', '3.1-pro', '3-flash', '2.5-flash', 'pro', 'flash'];
-    const modelosOrdenados = disponiveis.sort((a, b) => {
-      const idxA = ordemPreferencia.findIndex((p) => a.includes(p));
-      const idxB = ordemPreferencia.findIndex((p) => b.includes(p));
-      return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
-    });
+    // Prioriza sempre 'pro' estável primeiro, depois 'flash' estável, depois fallbacks
+    const ordenar = (lista: string[]) =>
+      lista.sort((a, b) => {
+        const pesoA = a.includes('pro') ? 0 : 1;
+        const pesoB = b.includes('pro') ? 0 : 1;
+        return pesoA - pesoB || b.localeCompare(a); // Versão mais recente primeiro
+      });
+
+    const filaModelos = [...ordenar(estaveis), ...ordenar(fallbacks)];
 
     const bytes = await file.arrayBuffer();
     const base64Pdf = Buffer.from(bytes).toString('base64');
 
-    let ultimoErro = '';
+    const erros: string[] = [];
 
-    for (const modelo of modelosOrdenados.slice(0, 4)) {
+    // 2. Percorre a fila completa até encontrar um modelo com cota > 0
+    for (const modelo of filaModelos) {
       try {
         const response = await ai.models.generateContent({
           model: modelo,
@@ -89,7 +102,6 @@ export async function POST(req: Request) {
             alternativaCorreta: string;
           }>;
 
-          // Formata limpo para a tela: "1 - B"
           const gabaritoLimpo = questoes
             .sort((a, b) => a.questao - b.questao)
             .map((q) => `${q.questao} - ${q.alternativaCorreta.trim().toUpperCase()}`)
@@ -101,11 +113,14 @@ export async function POST(req: Request) {
           });
         }
       } catch (err: any) {
-        ultimoErro = `[${modelo}] ${err?.message || 'Erro'}`;
+        erros.push(`${modelo}: ${err?.status || err?.code || 'erro'}`);
       }
     }
 
-    return NextResponse.json({ error: ultimoErro }, { status: 500 });
+    return NextResponse.json(
+      { error: `Nenhum modelo aceitou a chamada. Tentados: ${erros.join(' | ')}` },
+      { status: 500 }
+    );
   } catch (error: any) {
     return NextResponse.json({ error: error?.message || 'Erro interno.' }, { status: 500 });
   }

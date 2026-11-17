@@ -48,7 +48,7 @@ export default function Home() {
 
         <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-zinc-700 rounded-lg cursor-pointer hover:border-emerald-500 transition">
           <span className="text-sm text-zinc-400 text-center px-4">
-            {loading ? 'Resolvendo prova (aguarde ~5s)...' : 'Clique para selecionar o PDF'}
+            {loading ? 'Resolvendo prova (aguarde 5s)...' : 'Clique para selecionar o PDF'}
           </span>
           <input
             type="file"

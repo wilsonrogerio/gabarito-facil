@@ -5,18 +5,11 @@ export const maxDuration = 60;
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Modelos Pro reais da API (do mais novo para o estável)
-const MODELOS_PRO = [
-  'gemini-3.1-pro-preview',
-  'gemini-2.5-pro',
-  'gemini-3-flash-preview',
-];
-
 export async function POST(req: Request) {
   try {
     if (!process.env.GEMINI_API_KEY) {
       return NextResponse.json(
-        { error: 'GEMINI_API_KEY não configurada na Vercel.' },
+        { error: 'GEMINI_API_KEY não encontrada nas variáveis de ambiente da Vercel.' },
         { status: 500 }
       );
     }
@@ -28,12 +21,45 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Nenhum PDF enviado.' }, { status: 400 });
     }
 
+    // 1. Descobre dinamicamente os modelos válidos para a sua chave atual
+    const pager = await ai.models.list();
+    const disponiveis: string[] = [];
+    for await (const m of pager) {
+      const nome = m.name?.replace('models/', '') || '';
+      if (
+        nome.includes('gemini') &&
+        !nome.includes('embedding') &&
+        !nome.includes('imagen') &&
+        !nome.includes('veo') &&
+        !nome.includes('tts') &&
+        !nome.includes('image')
+      ) {
+        disponiveis.push(nome);
+      }
+    }
+
+    // Ordena priorizando versões flash estáveis (mais rápidas e maior cota gratuita)
+    const prioridades = ['flash', 'pro'];
+    const modelosOrdenados = disponiveis.sort((a, b) => {
+      const scoreA = prioridades.findIndex((p) => a.includes(p));
+      const scoreB = prioridades.findIndex((p) => b.includes(p));
+      return (scoreA === -1 ? 99 : scoreA) - (scoreB === -1 ? 99 : scoreB);
+    });
+
+    if (modelosOrdenados.length === 0) {
+      return NextResponse.json(
+        { error: 'Nenhum modelo Gemini disponível para esta API Key.' },
+        { status: 500 }
+      );
+    }
+
     const bytes = await file.arrayBuffer();
     const base64Pdf = Buffer.from(bytes).toString('base64');
 
-    let ultimoErroMsg = 'Falha desconhecida';
+    let ultimoErro = '';
 
-    for (const modelo of MODELOS_PRO) {
+    // 2. Testa os modelos reais da sua conta até o primeiro responder
+    for (const modelo of modelosOrdenados.slice(0, 4)) {
       try {
         const response = await ai.models.generateContent({
           model: modelo,
@@ -44,13 +70,10 @@ export async function POST(req: Request) {
                 data: base64Pdf,
               },
             },
-            'Resolva todas as questões desta prova e retorne APENAS o gabarito final.',
+            'Resolva todas as questões desta prova (incluindo gráficos e imagens) e retorne APENAS o gabarito final.',
           ],
           config: {
             temperature: 0.1,
-            thinkingConfig: {
-              thinkingBudget: 1024, // Garante raciocínio matemático sem demorar 40s
-            },
             systemInstruction:
               'Você é um corretor de provas exato. Resolva cada questão internamente com rigor matemático e lógico, mas na sua resposta final escreva EXCLUSIVAMENTE o número da questão e a letra da alternativa correta, uma por linha, no formato exato: "1 - A". Não escreva explicações, introduções, saudações ou textos adicionais.',
           },
@@ -63,16 +86,14 @@ export async function POST(req: Request) {
           });
         }
       } catch (err: any) {
-        ultimoErroMsg = `[${modelo}] ${err?.message || JSON.stringify(err)}`;
-        console.error(ultimoErroMsg);
-        // Continua imediatamente para o próximo modelo da lista
+        ultimoErro = `[${modelo}] ${err?.message || 'Erro desconhecido'}`;
       }
     }
 
-    return NextResponse.json({ error: ultimoErroMsg }, { status: 500 });
+    return NextResponse.json({ error: ultimoErro }, { status: 500 });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error?.message || 'Erro interno no servidor.' },
+      { error: error?.message || 'Erro interno ao processar requisição.' },
       { status: 500 }
     );
   }

@@ -5,13 +5,12 @@ export const maxDuration = 60;
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Modelos reais com cota gratuita separada (sem o 3.8-flash já esgotado hoje e sem o lite inexistente)
-const MODELOS_DISPONIVEIS = [
+// Apenas os modelos que deram timeout (ativos) sem o 3.8-flash que já esgotou hoje
+const MODELOS_ATIVOS = [
   'gemini-3.7-flash',
   'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-4-hydrogen',
-  'gemini-3.8-flash', // Mantido por último para quando a cota renovar amanhã
 ];
 
 export async function POST(req: Request) {
@@ -28,7 +27,7 @@ export async function POST(req: Request) {
 
     const erros: string[] = [];
 
-    for (const modelo of MODELOS_DISPONIVEIS) {
+    for (const modelo of MODELOS_ATIVOS) {
       try {
         const response = await ai.models.generateContent({
           model: modelo,
@@ -43,7 +42,7 @@ export async function POST(req: Request) {
           ],
           config: {
             temperature: 0.1,
-            abortSignal: AbortSignal.timeout(14000), // Máximo 14s por modelo para nunca dar timeout na Vercel
+            // Sem AbortSignal curto para deixar o modelo terminar a leitura do PDF
             responseMimeType: 'application/json',
             responseSchema: {
               type: Type.ARRAY,
@@ -83,19 +82,17 @@ export async function POST(req: Request) {
           });
         }
       } catch (err: any) {
-        const status = err?.status || err?.code || 'timeout';
-        erros.push(`${modelo}: ${status}`);
-        // Se deu 429 (cota) ou 503 (pico), pula imediatamente para o próximo modelo da fila sem pausar
+        erros.push(`${modelo}: ${err?.status || err?.message || 'erro'}`);
       }
     }
 
     return NextResponse.json(
-      { error: `Todos os modelos falharam no momento (${erros.join(' | ')})` },
+      { error: `Falha nos modelos (${erros.join(' | ')})` },
       { status: 503 }
     );
   } catch (error: any) {
     return NextResponse.json(
-      { error: error?.message || 'Erro interno ao processar PDF.' },
+      { error: error?.message || 'Erro interno.' },
       { status: 500 }
     );
   }

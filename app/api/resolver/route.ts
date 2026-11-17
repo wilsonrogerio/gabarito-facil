@@ -6,28 +6,34 @@ interface GroqModel {
 
 interface RespostaQuestao {
   questao: number;
-  calculo?: string;
   letra: string;
 }
 
 export async function POST(req: Request) {
   try {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: 'GROQ_API_KEY não configurada na Vercel (faça Redeploy após salvar).' },
+        { status: 500 }
+      );
+    }
+
     const body = (await req.json()) as { textoProva?: string };
     const textoProva = body.textoProva;
 
     if (!textoProva || textoProva.trim().length < 20) {
       return NextResponse.json(
-        { error: 'Não foi possível ler o texto do PDF.' },
+        { error: 'Texto do PDF vazio ou ilegível.' },
         { status: 400 }
       );
     }
 
     const headers = {
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     };
 
-    // 1. Consulta os modelos ativos na sua conta Groq agora
     const modelsRes = await fetch('https://api.groq.com/openai/v1/models', { headers });
     const modelsData = (await modelsRes.json()) as {
       data?: GroqModel[];
@@ -36,12 +42,11 @@ export async function POST(req: Request) {
 
     if (!modelsRes.ok || !Array.isArray(modelsData.data)) {
       return NextResponse.json(
-        { error: modelsData?.error?.message || 'Erro ao listar modelos na Groq.' },
+        { error: modelsData?.error?.message || `Erro HTTP ${modelsRes.status} ao listar modelos.` },
         { status: modelsRes.status }
       );
     }
 
-    // Filtra apenas modelos de chat/texto (remove whisper, guard, tts, etc.)
     const modelosTexto: string[] = modelsData.data
       .map((m: GroqModel) => m.id)
       .filter(
@@ -50,44 +55,35 @@ export async function POST(req: Request) {
           !id.includes('guard') &&
           !id.includes('tts') &&
           !id.includes('orpheus') &&
-          !id.includes('playai')
+          !id.includes('playai') &&
+          !id.includes('safeguard')
       );
 
-    // Ordena priorizando os mais inteligentes para matemática e lógica
-    const prioridades = ['70b', 'llama-4', 'qwen', '32b', '27b', '17b', '8b'];
+    const prioridades = ['70b', 'llama-4', '120b', 'qwen', '32b', '27b', '8b'];
     const filaModelos = modelosTexto.sort((a: string, b: string) => {
       const idxA = prioridades.findIndex((p) => a.toLowerCase().includes(p));
       const idxB = prioridades.findIndex((p) => b.toLowerCase().includes(p));
       return (idxA === -1 ? 99 : idxA) - (idxB === -1 ? 99 : idxB);
     });
 
-    if (filaModelos.length === 0) {
-      return NextResponse.json(
-        { error: 'Nenhum modelo de texto disponível na sua conta Groq.' },
-        { status: 500 }
-      );
-    }
+    const erros: string[] = [];
 
-    let ultimoErro = '';
-
-    // 2. Executa no primeiro modelo ativo que responder
-    for (const modelo of filaModelos.slice(0, 4)) {
+    for (const modelo of filaModelos.slice(0, 5)) {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           model: modelo,
           temperature: 0.1,
-          response_format: { type: 'json_object' },
           messages: [
             {
               role: 'system',
               content:
-                'Você é um professor exato de matemática e lógica. Resolva cada questão da prova passo a passo internamente e retorne APENAS um JSON estrito no formato: {"respostas": [{"questao": 1, "calculo": "conta curta", "letra": "A"}]}.',
+                'Resolva cada questão da prova passo a passo e no final responda APENAS um JSON válido neste formato exato: {"respostas": [{"questao": 1, "calculo": "conta curta", "letra": "A"}]}',
             },
             {
               role: 'user',
-              content: `Resolva todas as questões abaixo:\n\n${textoProva}`,
+              content: `Resolva todas as questões abaixo e entregue o JSON final:\n\n${textoProva}`,
             },
           ],
         }),
@@ -95,26 +91,43 @@ export async function POST(req: Request) {
 
       const data = await res.json();
 
-      if (res.ok && data?.choices?.[0]?.message?.content) {
-        const conteudo = JSON.parse(data.choices[0].message.content) as {
-          respostas?: RespostaQuestao[];
-        };
-        const lista = conteudo.respostas || [];
-
-        const gabarito = lista
-          .sort((a: RespostaQuestao, b: RespostaQuestao) => a.questao - b.questao)
-          .map((item: RespostaQuestao) => `${item.questao} - ${item.letra.trim().toUpperCase()}`)
-          .join('\n');
-
-        return NextResponse.json({ gabarito, modelo });
+      if (!res.ok) {
+        erros.push(`${modelo}: ${data?.error?.message || res.status}`);
+        continue;
       }
 
-      ultimoErro = `[${modelo}] ${data?.error?.message || 'Erro desconhecido'}`;
+      const rawContent: string = data?.choices?.[0]?.message?.content || '';
+      // Remove tags <think>...</think> se o modelo usar raciocínio e extrai apenas o JSON
+      const semThink = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
+      const matchJson = semThink.match(/\{[\s\S]*\}/);
+
+      if (matchJson) {
+        try {
+          const conteudo = JSON.parse(matchJson[0]) as { respostas?: RespostaQuestao[] };
+          const lista = conteudo.respostas || [];
+
+          if (lista.length > 0) {
+            const gabarito = lista
+              .sort((a: RespostaQuestao, b: RespostaQuestao) => a.questao - b.questao)
+              .map((item: RespostaQuestao) => `${item.questao} - ${item.letra.trim().toUpperCase()}`)
+              .join('\n');
+
+            return NextResponse.json({ gabarito, modelo });
+          }
+        } catch {
+          erros.push(`${modelo}: JSON inválido retornado`);
+        }
+      } else {
+        erros.push(`${modelo}: resposta sem JSON`);
+      }
     }
 
-    return NextResponse.json({ error: ultimoErro }, { status: 500 });
+    return NextResponse.json(
+      { error: erros.length > 0 ? erros.join(' | ') : 'Nenhum modelo retornou respostas.' },
+      { status: 500 }
+    );
   } catch (err: unknown) {
-    const mensagem = err instanceof Error ? err.message : 'Erro interno no servidor.';
+    const mensagem = err instanceof Error ? err.message : 'Erro interno inesperado.';
     return NextResponse.json({ error: mensagem }, { status: 500 });
   }
 }

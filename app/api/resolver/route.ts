@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     const base64Pdf = Buffer.from(bytes).toString('base64');
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: [
         {
           inlineData: {
@@ -31,7 +31,7 @@ export async function POST(req: Request) {
         systemInstruction:
           'Você é um corretor de provas exato. Resolva cada questão internamente com rigor matemático e lógico, mas na sua resposta final escreva EXCLUSIVAMENTE o número da questão e a letra da alternativa correta, uma por linha, no formato exato: "1 - A". Não escreva explicações, introduções, saudações ou textos adicionais.',
       },
-    });
+    });;
 
     return NextResponse.json({ gabarito: response.text });
   } catch (error) {

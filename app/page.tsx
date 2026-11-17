@@ -4,40 +4,64 @@ import { useState } from 'react';
 
 export default function Home() {
   const [resultado, setResultado] = useState('');
+  const [status, setStatus] = useState('');
   const [loading, setLoading] = useState(false);
 
-  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  async function enviarComPersistência(file: File) {
     setLoading(true);
     setResultado('');
 
-    const formData = new FormData();
-    formData.append('file', file);
+    for (let rodada = 1; rodada <= 5; rodada++) {
+      setStatus(
+        rodada === 1
+          ? 'Analisando questões...'
+          : `Servidor ocupado, tentando novamente (${rodada}/5)...`
+      );
 
-    try {
-      const res = await fetch('/api/resolver', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      setResultado(data.gabarito || data.error);
-    } catch {
-      setResultado('Falha na comunicação com o servidor.');
-    } finally {
-      setLoading(false);
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch('/api/resolver', {
+          method: 'POST',
+          body: formData,
+        });
+        const data = await res.json();
+
+        if (res.ok && data.gabarito) {
+          setResultado(data.gabarito);
+          setStatus('');
+          setLoading(false);
+          return;
+        }
+      } catch {
+        // Ignora falha de rede pontual e tenta a próxima rodada
+      }
+
+      await new Promise((r) => setTimeout(r, 2000));
     }
+
+    setStatus('');
+    setResultado('Não foi possível obter resposta após 5 tentativas. Selecione o PDF novamente.');
+    setLoading(false);
+  }
+
+  function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) {
+      enviarComPersistência(file);
+    }
+    e.target.value = ''; // Permite reenviar o mesmo arquivo se precisar
   }
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-lg">
-        <h1 className="text-lg font-semibold mb-4 text-center">Gabarito Rápido PDF</h1>
+        <h1 className="text-lg font-semibold mb-4 text-center">Gabarito Rápido</h1>
 
         <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-zinc-700 rounded-lg cursor-pointer hover:border-emerald-500 transition">
-          <span className="text-sm text-zinc-400">
-            {loading ? 'Analisando questões...' : 'Clique para selecionar o PDF'}
+          <span className="text-sm text-zinc-400 text-center px-4">
+            {loading ? status : 'Clique para selecionar o PDF'}
           </span>
           <input
             type="file"

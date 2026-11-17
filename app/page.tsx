@@ -21,7 +21,8 @@ async function extrairTextoComOCR(
   for (let i = 1; i <= totalPaginas; i++) {
     onProgress(`Lendo página ${i} de ${totalPaginas}...`);
     const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 1.8 });
+    // Escala 2.5 melhora a leitura de expoentes (ex: 3^10) e números de questão
+    const viewport = page.getViewport({ scale: 2.5 });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
 

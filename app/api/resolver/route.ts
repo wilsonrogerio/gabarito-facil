@@ -63,16 +63,16 @@ export async function POST(req: Request) {
           model: modelo,
           temperature: 0.1,
           max_tokens: 8192,
-          reasoning_effort: 'low',
+          reasoning_effort: 'medium',
           messages: [
             {
               role: 'system',
               content:
-                'Você é um professor exato de matemática e lógica. O texto enviado foi extraído via OCR de uma prova, então pode conter pequenos ruídos de leitura. Interprete as fórmulas e alternativas corretamente, resolva cada questão com rigor e termine com a lista final no formato exato:\n1 - A\n2 - B',
+                'Você é um professor exato de matemática e lógica. O texto abaixo veio de OCR de uma prova de 10 questões (numeradas de 1 a 10). Atenção aos erros típicos de OCR: "310+1" significa "3^10 + 1", "x2" significa "x²", e símbolos ausentes entre parênteses são conectivos lógicos (→, ↔, ∧, ∨). Se houver descrição de gráfico sem imagem, deduza a trajetória parabólica simétrica (se o pico é em x=10, a queda é em x=20). Resolva TODAS as 10 questões sem pular nenhuma e finalize com a lista exata:\n1 - A\n2 - B\n...\n10 - C',
             },
             {
               role: 'user',
-              content: `Resolva todas as questões abaixo e termine com o gabarito final no formato "1 - A":\n\n${textoProva}`,
+              content: `Resolva todas as 10 questões abaixo:\n\n${textoProva}`,
             },
           ],
         }),

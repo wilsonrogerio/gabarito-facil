@@ -21,24 +21,61 @@ async function extrairTextoComOCR(
   for (let i = 1; i <= totalPaginas; i++) {
     onProgress(`Lendo página ${i} de ${totalPaginas}...`);
     const page = await pdf.getPage(i);
-    // Escala 2.5 melhora a leitura de expoentes (ex: 3^10) e números de questão
     const viewport = page.getViewport({ scale: 2.5 });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
 
-    if (!context) continue;
+    // 1. Renderiza a página completa em um canvas temporário
+    const fullCanvas = document.createElement('canvas');
+    const fullContext = fullCanvas.getContext('2d');
+    if (!fullContext) continue;
 
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    fullCanvas.width = viewport.width;
+    fullCanvas.height = viewport.height;
 
     await page.render({
-      canvas,
-      canvasContext: context,
+      canvas: fullCanvas,
+      canvasContext: fullContext,
       viewport,
     }).promise;
 
-    const { data } = await worker.recognize(canvas);
-    textoCompleto += `--- Página ${i} ---\n${data.text}\n\n`;
+    // 2. Recorta apenas a área útil das questões (remove os 26% da direita onde fica o menu lateral)
+    // e corta 5% do topo/rodapé (onde fica URL e data/hora da impressão)
+    const cropX = 0;
+    const cropY = Math.floor(viewport.height * 0.05);
+    const cropWidth = Math.floor(viewport.width * 0.74);
+    const cropHeight = Math.floor(viewport.height * 0.90);
+
+    const croppedCanvas = document.createElement('canvas');
+    const croppedContext = croppedCanvas.getContext('2d');
+    if (!croppedContext) continue;
+
+    croppedCanvas.width = cropWidth;
+    croppedCanvas.height = cropHeight;
+
+    // Fundo branco garante contraste máximo para o Tesseract
+    croppedContext.fillStyle = '#FFFFFF';
+    croppedContext.fillRect(0, 0, cropWidth, cropHeight);
+    croppedContext.drawImage(
+      fullCanvas,
+      cropX,
+      cropY,
+      cropWidth,
+      cropHeight,
+      0,
+      0,
+      cropWidth,
+      cropHeight
+    );
+
+    const { data } = await worker.recognize(croppedCanvas);
+
+    // Limpa ruídos residuais dos botões da plataforma antes de mandar para a IA
+    const textoLimpo = data.text
+      .replace(/Marcar para revisão/gi, '')
+      .replace(/Acess[íi]vel com Libras/gi, '')
+      .replace(/VLibras/gi, '')
+      .replace(/Acessivel\.com/gi, '');
+
+    textoCompleto += `--- Página ${i} ---\n${textoLimpo}\n\n`;
   }
 
   await worker.terminate();

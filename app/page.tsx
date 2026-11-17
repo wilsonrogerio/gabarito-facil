@@ -25,7 +25,15 @@ export default function Home() {
         method: 'POST',
         body: formData,
       });
-      const data = await res.json();
+
+      const rawText = await res.text();
+      let data: any;
+
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Servidor demorou a responder (${res.status}). Tente enviar novamente.`);
+      }
 
       if (res.ok && data.gabarito) {
         setResultado(data.gabarito);
@@ -34,7 +42,7 @@ export default function Home() {
         setErro(data.error || 'Erro ao processar prova.');
       }
     } catch (err: any) {
-      setErro(err?.message || 'Falha de rede ou timeout.');
+      setErro(err?.message || 'Falha de conexão.');
     } finally {
       setLoading(false);
       e.target.value = '';
@@ -44,11 +52,11 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-4">
       <div className="w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-lg">
-        <h1 className="text-lg font-semibold mb-4 text-center">Gabarito Rápido Pro</h1>
+        <h1 className="text-lg font-semibold mb-4 text-center">Gabarito Rápido</h1>
 
         <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-zinc-700 rounded-lg cursor-pointer hover:border-emerald-500 transition">
           <span className="text-sm text-zinc-400 text-center px-4">
-            {loading ? 'Resolvendo prova (aguarde 5s)...' : 'Clique para selecionar o PDF'}
+            {loading ? 'Analisando (máx. 25s)...' : 'Clique para selecionar o PDF'}
           </span>
           <input
             type="file"

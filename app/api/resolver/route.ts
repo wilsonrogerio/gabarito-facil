@@ -42,7 +42,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Remove modelos de áudio, segurança e modelos não-português (allam)
     const modelosTexto: string[] = modelsData.data
       .map((m: GroqModel) => m.id)
       .filter((id: string) => {
@@ -58,8 +57,8 @@ export async function POST(req: Request) {
         );
       });
 
-    // Prioriza os melhores modelos disponíveis no catálogo atual da Groq
-    const prioridades = ['gpt-oss', 'qwen', 'deepseek', 'llama-4', 'llama-3.3', 'llama-3.1', 'gemma', 'mistral', 'llama'];
+    // Prioriza o 120b e o qwen3.8-27b (melhores em lógica/matemática)
+    const prioridades = ['120b', 'qwen', '20b', '70b', 'llama'];
     const filaModelos = modelosTexto.sort((a: string, b: string) => {
       const idxA = prioridades.findIndex((p) => a.toLowerCase().includes(p));
       const idxB = prioridades.findIndex((p) => b.toLowerCase().includes(p));
@@ -68,22 +67,24 @@ export async function POST(req: Request) {
 
     const erros: string[] = [];
 
-    for (const modelo of filaModelos.slice(0, 5)) {
+    for (const modelo of filaModelos.slice(0, 3)) {
       const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers,
         body: JSON.stringify({
           model: modelo,
           temperature: 0.1,
+          max_tokens: 8192,
+          reasoning_effort: 'low',
           messages: [
             {
               role: 'system',
               content:
-                'Você é um professor de matemática e lógica. Resolva cada questão da prova passo a passo com atenção e, ao final de todas, escreva o gabarito limpo no formato exato "1 - A" (uma questão por linha).',
+                'Resolva cada questão da prova com rigor matemático e lógico. Seja direto: para cada questão, faça apenas a conta essencial em 1 linha e termine a resposta com a lista final no formato exato:\n1 - A\n2 - B',
             },
             {
               role: 'user',
-              content: `Resolva todas as questões abaixo e termine com o gabarito no formato "1 - A":\n\n${textoProva}`,
+              content: `Resolva todas as questões abaixo e entregue o gabarito final no formato "1 - A":\n\n${textoProva}`,
             },
           ],
         }),
@@ -96,20 +97,19 @@ export async function POST(req: Request) {
         continue;
       }
 
-      const rawContent: string = data?.choices?.[0]?.message?.content || '';
-      // Remove bloco de pensamento interno <think>...</think>
-      const semThink = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '');
+      const msg = data?.choices?.[0]?.message || {};
+      const textoFinal: string = msg.content || msg.reasoning || '';
 
-      // Captura todas as ocorrências no padrão "1 - A", "2 - B", etc.
       const mapaRespostas = new Map<number, string>();
-      const regex = /\b(\d{1,2})\s*[-–:.]\s*([A-E])\b/gi;
+      // Aceita formatos: "1 - A", "1: A", "1) A", "Questão 1: A", "**1 - A**"
+      const regex = /(?:quest[aã]o\s*)?\b(\d{1,2})\s*[-–:.)]\s*\*?\*?([A-E])\b/gi;
       let match: RegExpExecArray | null;
 
-      while ((match = regex.exec(semThink)) !== null) {
+      while ((match = regex.exec(textoFinal)) !== null) {
         const num = parseInt(match[1], 10);
         const letra = match[2].toUpperCase();
         if (num >= 1 && num <= 50) {
-          mapaRespostas.set(num, letra); // Mantém a última ocorrência (do gabarito final)
+          mapaRespostas.set(num, letra);
         }
       }
 
@@ -122,11 +122,13 @@ export async function POST(req: Request) {
         return NextResponse.json({ gabarito, modelo });
       }
 
-      erros.push(`${modelo}: não encontrou padrão de gabarito`);
+      // Mostra um trecho do que o modelo devolveu caso falhe novamente
+      const preview = textoFinal.slice(0, 120).replace(/\n/g, ' ');
+      erros.push(`${modelo}: sem padrão (retorno: "${preview}...")`);
     }
 
     return NextResponse.json(
-      { error: `Modelos testados [${filaModelos.join(', ')}]. Erros: ${erros.join(' | ')}` },
+      { error: erros.join(' | ') },
       { status: 500 }
     );
   } catch (err: unknown) {

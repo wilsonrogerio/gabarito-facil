@@ -2,21 +2,26 @@
 
 import { useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { createWorker } from 'tesseract.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
-async function converterPdfParaImagens(file: File): Promise<string[]> {
+async function extrairTextoComOCR(
+  file: File,
+  onProgress: (msg: string) => void
+): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const imagens: string[] = [];
+  const totalPaginas = Math.min(pdf.numPages, 12);
 
-  // Limita a 10 páginas por segurança
-  const totalPaginas = Math.min(pdf.numPages, 10);
+  onProgress('Iniciando leitura óptica (OCR)...');
+  const worker = await createWorker('por');
+  let textoCompleto = '';
 
   for (let i = 1; i <= totalPaginas; i++) {
+    onProgress(`Lendo página ${i} de ${totalPaginas}...`);
     const page = await pdf.getPage(i);
-    // Escala 1.5 deixa o texto e os números dos gráficos bem nítidos sem ficar pesado
-    const viewport = page.getViewport({ scale: 1.5 });
+    const viewport = page.getViewport({ scale: 1.8 });
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
 
@@ -25,19 +30,24 @@ async function converterPdfParaImagens(file: File): Promise<string[]> {
     canvas.width = viewport.width;
     canvas.height = viewport.height;
 
-    await page.render({ canvas, canvasContext: context, viewport }).promise;
+    await page.render({
+      canvas,
+      canvasContext: context,
+      viewport,
+    }).promise;
 
-    // Exporta em JPEG qualidade 0.75 (~120 KB por página, cabe com folga na Vercel)
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
-    imagens.push(dataUrl);
+    const { data } = await worker.recognize(canvas);
+    textoCompleto += `--- Página ${i} ---\n${data.text}\n\n`;
   }
 
-  return imagens;
+  await worker.terminate();
+  return textoCompleto;
 }
 
 export default function Home() {
   const [resultado, setResultado] = useState('');
   const [modeloUsado, setModeloUsado] = useState('');
+  const [status, setStatus] = useState('');
   const [erro, setErro] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -51,12 +61,13 @@ export default function Home() {
     setModeloUsado('');
 
     try {
-      const imagens = await converterPdfParaImagens(file);
+      const textoProva = await extrairTextoComOCR(file, setStatus);
+      setStatus('Resolvendo questões na IA...');
 
       const res = await fetch('/api/resolver', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imagens }),
+        body: JSON.stringify({ textoProva }),
       });
 
       const data = await res.json();
@@ -71,6 +82,7 @@ export default function Home() {
       setErro(err instanceof Error ? err.message : 'Falha ao ler PDF.');
     } finally {
       setLoading(false);
+      setStatus('');
       e.target.value = '';
     }
   }
@@ -81,8 +93,8 @@ export default function Home() {
         <h1 className="text-lg font-semibold mb-4 text-center">Gabarito Rápido</h1>
 
         <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-zinc-700 rounded-lg cursor-pointer hover:border-emerald-500 transition">
-          <span className="text-sm text-zinc-400">
-            {loading ? 'Lendo páginas e resolvendo...' : 'Clique para selecionar o PDF'}
+          <span className="text-sm text-zinc-400 text-center px-4">
+            {loading ? status : 'Clique para selecionar o PDF'}
           </span>
           <input
             type="file"
